@@ -2,11 +2,19 @@ name: Matcha Restock Check
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # 每 15 分鐘檢查一次（時間為 UTC；GitHub 排程偶爾延遲幾分鐘屬正常）
-  workflow_dispatch: {}        # 也可在 Actions 頁手動按一下執行
+    - cron: "*/15 * * * *"   # 每 15 分鐘自動檢查（UTC；偶爾延遲幾分鐘屬正常）
+  workflow_dispatch:          # 手動執行；可選擇模式
+    inputs:
+      mode:
+        description: "執行模式（test = 馬上傳一則測試訊息）"
+        type: choice
+        default: "normal"
+        options:
+          - normal
+          - test
 
 permissions:
-  contents: write              # 允許把 state.json 寫回 repo（記住上次庫存狀態）
+  contents: write
 
 concurrency:
   group: matcha-check
@@ -25,11 +33,16 @@ jobs:
       - name: Install deps
         run: pip install requests
 
-      - name: Check stock
+      - name: Run
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: python check_stock.py
+        run: |
+          if [ "${{ github.event.inputs.mode }}" = "test" ]; then
+            python check_stock.py test
+          else
+            python check_stock.py
+          fi
 
       - name: Commit state
         run: |
