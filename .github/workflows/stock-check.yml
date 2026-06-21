@@ -1,0 +1,44 @@
+name: Matcha Restock Check
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # 每 15 分鐘檢查一次（時間為 UTC；GitHub 排程偶爾延遲幾分鐘屬正常）
+  workflow_dispatch: {}        # 也可在 Actions 頁手動按一下執行
+
+permissions:
+  contents: write              # 允許把 state.json 寫回 repo（記住上次庫存狀態）
+
+concurrency:
+  group: matcha-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Check stock
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: python check_stock.py
+
+      - name: Commit state
+        run: |
+          if [[ -n "$(git status --porcelain state.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "update stock state [skip ci]"
+            git push
+          else
+            echo "state.json 無變化"
+          fi
