@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-小山園 (Marukyu-Koyamaen) 抹茶補貨監控 → LINE 通知（自動抓取分類版）
+小山園 (Marukyu-Koyamaen) 抹茶補貨監控 → LINE 通知（自動抓取分類版 + 廣播給所有好友）
 
 做法：
   1. 給定幾個「分類頁」網址，程式自動抓出底下所有商品。
   2. 逐一檢查商品頁是否含 "This product is currently out of stock and unavailable."
      有這句 = 缺貨；消失 = 補貨。
   3. 只在「缺貨 → 有貨」的轉換時發 LINE，避免洗版。
-  分類有新品也會自動納入，不用手動維護商品清單。
+  4. 補貨通知會「廣播」給所有加入這個 LINE 官方帳號的好友。
 
 用法：
   python check_stock.py          # 正常檢查
-  python check_stock.py test     # 發一則測試訊息，確認 LINE 設定 OK
+  python check_stock.py test     # 發一則測試訊息給所有好友，確認 LINE 設定 OK
 """
 
 import json
@@ -24,7 +24,7 @@ from pathlib import Path
 import requests
 
 # ─────────────────────────────────────────────────────────────
-# 要監控的「分類頁」。想加減分類就改這裡（例如把寺院用 kancho 也加進來）。
+# 要監控的「分類頁」。想加減分類就改這裡。
 # ─────────────────────────────────────────────────────────────
 CATEGORY_URLS = [
     "https://www.marukyu-koyamaen.co.jp/english/shop/products/catalog/matcha/principal",     # 精選
@@ -43,14 +43,13 @@ OOS_MARKER = "This product is currently out of stock and unavailable."
 SANITY_MARKERS = ("Product Detail", "SKU")
 
 BASE = "https://www.marukyu-koyamaen.co.jp"
-# 只抓 /english/shop/products/{商品ID}，自動排除 /products/catalog/... 等分類連結
 PRODUCT_PATH_RE = re.compile(r"^/english/shop/products/([0-9a-zA-Z]+)/?$")
 ANCHOR_RE = re.compile(r"<a\b([^>]*)>", re.IGNORECASE)
 HREF_RE = re.compile(r'href="([^"]+)"', re.IGNORECASE)
 TITLE_RE = re.compile(r'title="([^"]+)"', re.IGNORECASE)
 
 STATE_FILE = Path(os.environ.get("STATE_FILE", "state.json"))
-REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "3"))  # 每次請求間隔秒數（對伺服器客氣、降低被擋機率）
+REQUEST_DELAY = float(os.environ.get("REQUEST_DELAY", "3"))
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -58,6 +57,7 @@ HEADERS = {
 }
 
 LINE_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+# 廣播模式不需要 LINE_USER_ID 了，但保留相容（如果還想同時測試單發也可用）
 LINE_USER_ID = os.environ.get("LINE_USER_ID", "")
 
 
@@ -70,7 +70,6 @@ def http_get(url: str):
 
 
 def discover_products(category_urls) -> dict:
-    """從分類頁自動抓出 {商品網址: 名稱}。"""
     found = {}
     for cat in category_urls:
         before = len(found)
@@ -85,7 +84,7 @@ def discover_products(category_urls) -> dict:
             if not href_m:
                 continue
             href = href_m.group(1)
-            path = re.sub(r"^https?://[^/]+", "", href)  # 轉成路徑（去掉網域）
+            path = re.sub(r"^https?://[^/]+", "", href)
             pm = PRODUCT_PATH_RE.match(path)
             if not pm:
                 continue
@@ -100,7 +99,6 @@ def discover_products(category_urls) -> dict:
 
 
 def fetch_status(url: str) -> str:
-    """回傳 'in_stock' / 'out_of_stock' / 'unknown'。"""
     r = http_get(url)
     if r is None:
         return "unknown"
@@ -129,32 +127,31 @@ def save_state(state: dict) -> None:
     )
 
 
-def send_line(text: str) -> None:
-    if not LINE_TOKEN or not LINE_USER_ID:
-        print("❌ 未設定 LINE_CHANNEL_ACCESS_TOKEN / LINE_USER_ID，跳過發送")
+def broadcast_line(text: str) -> None:
+    """廣播給所有加入這個 LINE 官方帳號的好友。"""
+    if not LINE_TOKEN:
+        print("❌ 未設定 LINE_CHANNEL_ACCESS_TOKEN，跳過發送")
         return
     resp = requests.post(
-        "https://api.line.me/v2/bot/message/push",
+        "https://api.line.me/v2/bot/message/broadcast",
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {LINE_TOKEN}",
         },
-        json={"to": LINE_USER_ID, "messages": [{"type": "text", "text": text}]},
+        json={"messages": [{"type": "text", "text": text}]},
         timeout=20,
     )
     if resp.status_code == 200:
-        print("✅ LINE 已送出")
+        print("✅ LINE 廣播已送出（所有好友）")
     else:
-        print(f"❌ LINE 發送失敗：{resp.status_code} {resp.text}")
+        print(f"❌ LINE 廣播失敗：{resp.status_code} {resp.text}")
 
 
 def main() -> None:
-    # 測試模式
     if len(sys.argv) > 1 and sys.argv[1] == "test":
-        send_line("🍵 測試訊息：小山園補貨通知設定成功！")
+        broadcast_line("🍵 測試訊息：小山園補貨通知設定成功！（這則會發給所有好友）")
         return
 
-    # 1) 自動抓商品（分類 + 額外指定）
     products = discover_products(CATEGORY_URLS)
     for name, url in EXTRA_PRODUCTS.items():
         products.setdefault(url, name)
@@ -164,7 +161,6 @@ def main() -> None:
         print("⚠️ 這次沒抓到任何商品（可能整批被擋），保留舊狀態，下輪再試。")
         return
 
-    # 2) 逐一檢查
     state = load_state()
     restocked = []
     for url, name in products.items():
@@ -174,7 +170,7 @@ def main() -> None:
 
         if status == "unknown":
             time.sleep(REQUEST_DELAY)
-            continue  # 抓失敗就保留舊狀態，不誤報
+            continue
 
         if prev == "out_of_stock" and status == "in_stock":
             restocked.append((name, url))
@@ -184,13 +180,12 @@ def main() -> None:
 
     save_state(state)
 
-    # 3) 有補貨才通知
     if restocked:
         lines = ["🍵 小山園補貨啦！"]
         for name, url in restocked:
             lines.append(f"\n• {name}\n{url}")
         lines.append("\n要登入才買得到，手刀結帳 👉")
-        send_line("\n".join(lines))
+        broadcast_line("\n".join(lines))
     else:
         print("這次沒有新補貨。")
 
